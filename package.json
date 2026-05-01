@@ -2,16 +2,16 @@
   "name": "obsidian-visuals",
   "private": true,
   "type": "module",
-  "packageManager": "bun@1.3.11",
+  "packageManager": "pnpm@10.18.0",
   "scripts": {
-    "agent": "bun agent.ts",
-    "conversation": "bun run agent --",
-    "check": "bun agent.ts --check",
+    "agent": "tsx agent.ts",
+    "conversation": "pnpm run agent --",
+    "check": "tsx agent.ts --check",
     "typecheck": "tsc --noEmit",
     "lint": "biome lint .",
     "format": "biome format --write .",
     "format:check": "biome format .",
-    "verify": "bun run format:check && bun run lint && bun run typecheck"
+    "verify": "pnpm run format:check && pnpm run lint && pnpm run typecheck"
   },
   "dependencies": {
     "@cursor/sdk": "^1.0.11"
@@ -19,6 +19,13 @@
   "devDependencies": {
     "@biomejs/biome": "^2.4.14",
     "@types/node": "^24.10.1",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sqlite3"
+    ]
   }
 }

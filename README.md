@@ -74,29 +74,29 @@ For agents that expect a direct skill directory, copy or clone `.agents/skills/o
 Install dependencies:
 
 ```sh
-bun install
+pnpm install
 ```
 
 Check configuration:
 
 ```sh
-bun run check
+pnpm run check
 ```
 
 Start the terminal assistant:
 
 ```sh
-bun run agent
+pnpm run agent
 ```
 
 Useful options:
 
 ```sh
-bun run agent -- --vault "/absolute/path/to/vault"
-bun run agent -- --target "/absolute/path/to/vault/Zettelkasten/My Essay.md"
-bun run agent -- --model composer-2
-bun run agent -- --agent-id agent-...
-bun run agent -- --plain
+pnpm run agent -- --vault "/absolute/path/to/vault"
+pnpm run agent -- --target "/absolute/path/to/vault/Zettelkasten/My Essay.md"
+pnpm run agent -- --model composer-2
+pnpm run agent -- --agent-id agent-...
+pnpm run agent -- --plain
 ```
 
 Inside the runner:
@@ -107,10 +107,13 @@ Inside the runner:
 /models composer
 /model composer-2
 /agents
+/resume 1
 /resume agent-...
 /runs
+/run 1
 /run run-...
 /debug
+/history
 /vault /absolute/path/to/vault
 /note Zettelkasten/My Essay.md
 /note none

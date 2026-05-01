@@ -1,6 +1,7 @@
 import {
   Agent,
   Cursor,
+  type AgentMessage,
   type AgentOptions,
   type RunResult,
   type Run,
@@ -54,6 +55,8 @@ type CommandResult = "continue" | "exit" | "refresh-preamble";
 type Session = {
   agent: SDKAgent;
   needsPreamble: boolean;
+  lastAgents: SDKAgentInfo[];
+  lastRuns: Run[];
 };
 
 function paint(options: Options, color: ColorName, text: string): string {
@@ -126,6 +129,8 @@ function parseArgs(argv: string[]): Options {
     };
 
     switch (arg) {
+      case "--":
+        break;
       case "--target":
         options.targetNote = resolve(next());
         break;
@@ -167,7 +172,7 @@ function parseArgs(argv: string[]): Options {
 }
 
 function printHelp(): void {
-  console.log(`Usage: bun run agent -- [options]
+  console.log(`Usage: pnpm run agent -- [options]
 
 Options:
   --target <path>      Optional default Obsidian note for the assistant context.
@@ -438,6 +443,8 @@ async function runConversation(options: Options): Promise<void> {
   const session: Session = {
     agent: await createLocalAgent(options),
     needsPreamble: !startsFromExistingAgent,
+    lastAgents: [],
+    lastRuns: [],
   };
   const rl = createInterface({ input, output });
 
@@ -500,7 +507,7 @@ async function handleCommand(
       return runCommand(options, () => setModel(options, rest));
     case "/agents":
       await runCommand(options, async () => {
-        await printAgents(options, rest);
+        await printAgents(options, session, rest);
         return undefined;
       });
       return "continue";
@@ -508,19 +515,25 @@ async function handleCommand(
       return runCommand(options, () => resumeAgentCommand(options, session, rest));
     case "/runs":
       await runCommand(options, async () => {
-        await printRuns(options, rest || session.agent.agentId);
+        await printRuns(options, session, rest || session.agent.agentId);
         return undefined;
       });
       return "continue";
     case "/run":
       await runCommand(options, async () => {
-        await inspectRun(options, rest);
+        await inspectRun(options, session, rest);
         return undefined;
       });
       return "continue";
     case "/debug":
       await runCommand(options, async () => {
         await debugCommand(options, session, rest);
+        return undefined;
+      });
+      return "continue";
+    case "/history":
+      await runCommand(options, async () => {
+        await printHistory(options, session, rest);
         return undefined;
       });
       return "continue";
@@ -657,7 +670,7 @@ async function loadModels(options: Options): Promise<SDKModel[]> {
   }
 }
 
-async function printAgents(options: Options, filter: string): Promise<void> {
+async function printAgents(options: Options, session: Session, filter: string): Promise<void> {
   const query = filter.trim().toLowerCase();
   const response = await Agent.list({ runtime: "local", cwd: ROOT, limit: 30 });
   const agents = query
@@ -675,20 +688,20 @@ async function printAgents(options: Options, filter: string): Promise<void> {
     return;
   }
 
+  session.lastAgents = agents;
   console.log(paint(options, "bold", "Local agents"));
-  for (const agent of agents) {
-    console.log(formatAgentLine(options, agent));
+  for (const [index, agent] of agents.entries()) {
+    console.log(formatAgentLine(options, agent, index + 1));
   }
-  console.log(
-    paint(options, "gray", "Use /resume <agent-id> to continue an existing conversation."),
-  );
+  console.log(paint(options, "gray", "Use /resume <number> or /resume <agent-id> to continue."));
 }
 
-function formatAgentLine(options: Options, agent: SDKAgentInfo): string {
+function formatAgentLine(options: Options, agent: SDKAgentInfo, index?: number): string {
   const marker = agent.agentId === options.agentId ? paint(options, "green", "*") : " ";
+  const prefix = index === undefined ? marker : `${marker} ${String(index).padStart(2, " ")}`;
   const status = agent.status ?? "unknown";
   const modified = formatTimestamp(agent.lastModified);
-  return `${marker} ${agent.agentId} ${paintStatus(options, status)} ${modified} ${agent.name}`;
+  return `${prefix} ${agent.agentId} ${paintStatus(options, status)} ${modified} ${agent.name}`;
 }
 
 async function resumeAgentCommand(
@@ -696,11 +709,15 @@ async function resumeAgentCommand(
   session: Session,
   value: string,
 ): Promise<CommandResult> {
-  const agentId = value.trim();
+  if (!value.trim()) {
+    await printAgents(options, session, "");
+    return "continue";
+  }
+
+  const agentId = resolveAgentId(value, session);
   if (!agentId) {
-    console.log(`${label(options, "agent")} ${session.agent.agentId}`);
     console.log(
-      paint(options, "gray", "Use /agents to list local agents, then /resume <agent-id>."),
+      paint(options, "red", "Unknown agent selection. Use /agents, then /resume <number>."),
     );
     return "continue";
   }
@@ -725,10 +742,10 @@ async function resumeAgentCommand(
   return "continue";
 }
 
-async function printRuns(options: Options, agentId: string): Promise<void> {
-  const targetAgentId = agentId.trim();
+async function printRuns(options: Options, session: Session, agentId: string): Promise<void> {
+  const targetAgentId = resolveAgentId(agentId, session);
   if (!targetAgentId) {
-    console.log(paint(options, "red", "Use /runs or /runs <agent-id>."));
+    console.log(paint(options, "red", "Use /runs, /runs <agent-id>, or /runs <agent-number>."));
     return;
   }
 
@@ -738,23 +755,25 @@ async function printRuns(options: Options, agentId: string): Promise<void> {
     return;
   }
 
+  session.lastRuns = response.items;
   console.log(paint(options, "bold", `Runs for ${targetAgentId}`));
-  for (const run of response.items) {
-    console.log(formatRunLine(options, run));
+  for (const [index, run] of response.items.entries()) {
+    console.log(formatRunLine(options, run, index + 1));
   }
-  console.log(paint(options, "gray", "Use /run <run-id> or /debug <run-id> to inspect one run."));
+  console.log(paint(options, "gray", "Use /run <number>, /run <run-id>, or /debug <number>."));
 }
 
-function formatRunLine(options: Options, run: Run): string {
+function formatRunLine(options: Options, run: Run, index?: number): string {
+  const prefix = index === undefined ? "" : `${String(index).padStart(2, " ")} `;
   const model = run.model?.id ?? "unknown-model";
   const created = formatTimestamp(run.createdAt);
-  return `${run.id} ${paintStatus(options, run.status)} ${model} ${created}`;
+  return `${prefix}${run.id} ${paintStatus(options, run.status)} ${model} ${created}`;
 }
 
-async function inspectRun(options: Options, value: string): Promise<void> {
-  const runId = value.trim();
+async function inspectRun(options: Options, session: Session, value: string): Promise<void> {
+  const runId = resolveRunId(value, session);
   if (!runId) {
-    console.log(paint(options, "red", "Use /run <run-id>."));
+    console.log(paint(options, "red", "Use /run <run-id>, or /runs then /run <number>."));
     return;
   }
 
@@ -801,22 +820,138 @@ async function debugCommand(options: Options, session: Session, value: string): 
       console.log(paint(options, "yellow", `No runs found for ${session.agent.agentId}.`));
       return;
     }
-    await inspectRun(options, latestRun.id);
+    await inspectRun(options, session, latestRun.id);
     return;
   }
 
-  if (target.startsWith("agent-")) {
-    const response = await Agent.listRuns(target, { runtime: "local", cwd: ROOT, limit: 1 });
+  const runId = resolveRunId(target, session);
+  if (runId) {
+    await inspectRun(options, session, runId);
+    return;
+  }
+
+  const agentId = resolveAgentId(target, session);
+  if (agentId) {
+    const response = await Agent.listRuns(agentId, { runtime: "local", cwd: ROOT, limit: 1 });
     const [latestRun] = response.items;
     if (!latestRun) {
-      console.log(paint(options, "yellow", `No runs found for ${target}.`));
+      console.log(paint(options, "yellow", `No runs found for ${agentId}.`));
       return;
     }
-    await inspectRun(options, latestRun.id);
+    await inspectRun(options, session, latestRun.id);
     return;
   }
 
-  await inspectRun(options, target);
+  console.log(
+    paint(
+      options,
+      "red",
+      "Use /debug, /debug <run-id>, /debug <agent-id>, or a recent list number.",
+    ),
+  );
+}
+
+async function printHistory(options: Options, session: Session, value: string): Promise<void> {
+  const { target, limit } = parseHistoryArgs(value);
+  const agentId = resolveAgentId(target, session);
+  if (!agentId) {
+    console.log(
+      paint(options, "red", "Use /history, /history <agent-id>, or /history <agent-number>."),
+    );
+    return;
+  }
+
+  const messages = await Agent.messages.list(agentId, { runtime: "local", cwd: ROOT, limit });
+  if (messages.length === 0) {
+    console.log(paint(options, "yellow", `No history found for ${agentId}.`));
+    return;
+  }
+
+  console.log(paint(options, "bold", `History for ${agentId}`));
+  for (const [index, message] of messages.entries()) {
+    printHistoryMessage(options, index + 1, message);
+  }
+}
+
+function parseHistoryArgs(value: string): { target: string; limit: number } {
+  const parts = value.trim().split(/\s+/).filter(Boolean);
+  const [target = "", rawLimit] = parts;
+  const parsedLimit = rawLimit ? Number.parseInt(rawLimit, 10) : 20;
+  return {
+    target,
+    limit: Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 100) : 20,
+  };
+}
+
+function printHistoryMessage(options: Options, index: number, message: AgentMessage): void {
+  const value = getConversationTurnValue(message.message);
+  const userText = extractUserText(value);
+  const assistantTexts = collectAssistantTexts(value);
+  const prefix = String(index).padStart(2, " ");
+
+  if (userText) {
+    console.log(
+      `${paint(options, "gray", prefix)} ${paint(options, "cyan", "you")}   ${truncate(userText, 500)}`,
+    );
+  }
+
+  const lastAssistantText = assistantTexts.at(-1);
+  if (lastAssistantText) {
+    console.log(
+      `${paint(options, "gray", "  ")} ${paint(options, "green", "agent")} ${truncate(lastAssistantText, 800)}`,
+    );
+  }
+}
+
+function getConversationTurnValue(message: unknown): unknown {
+  if (!isRecord(message)) return undefined;
+  if (isRecord(message.turn) && "value" in message.turn) {
+    return message.turn.value;
+  }
+  if ("agentConversationTurn" in message) return message.agentConversationTurn;
+  if ("shellConversationTurn" in message) return message.shellConversationTurn;
+  return undefined;
+}
+
+function extractUserText(value: unknown): string | undefined {
+  if (!isRecord(value) || !isRecord(value.userMessage)) return undefined;
+  if (typeof value.userMessage.text !== "string") return undefined;
+  return stripInjectedPreamble(value.userMessage.text);
+}
+
+function stripInjectedPreamble(text: string): string {
+  const marker = "\nUser message:\n";
+  const markerIndex = text.lastIndexOf(marker);
+  return (markerIndex === -1 ? text : text.slice(markerIndex + marker.length)).trim();
+}
+
+function collectAssistantTexts(value: unknown): string[] {
+  const texts: string[] = [];
+  walkObjects(value, (object) => {
+    const assistantText = extractAssistantText(object);
+    if (assistantText) {
+      texts.push(assistantText);
+    }
+  });
+  return texts;
+}
+
+function resolveAgentId(value: string, session: Session): string | undefined {
+  const target = value.trim();
+  if (!target) return session.agent.agentId;
+  if (/^\d+$/.test(target)) {
+    return session.lastAgents[Number(target) - 1]?.agentId;
+  }
+  return target.startsWith("agent-") ? target : undefined;
+}
+
+function resolveRunId(value: string, session: Session): string | undefined {
+  const target = value.trim();
+  if (!target) return undefined;
+  if (/^\d+$/.test(target)) {
+    return session.lastRuns[Number(target) - 1]?.id;
+  }
+  return target.startsWith("run-") ? target : undefined;
 }
 
 function printRunSummary(options: Options, run: Run): void {
@@ -899,6 +1034,13 @@ function walkObjects(value: unknown, visitor: (value: Record<string, unknown>) =
 }
 
 function extractAssistantText(value: Record<string, unknown>): string | undefined {
+  if (
+    isRecord(value.message) &&
+    value.message.case === "assistantMessage" &&
+    isRecord(value.message.value)
+  ) {
+    return typeof value.message.value.text === "string" ? value.message.value.text : undefined;
+  }
   if (value.type === "assistantMessage" && isRecord(value.message)) {
     return typeof value.message.text === "string" ? value.message.text : undefined;
   }
@@ -1046,11 +1188,12 @@ function printReplHelp(options: Options): void {
   /status           Show model, vault, note, and flags.
   /models [filter]  List Cursor models available for this API key.
   /model <id>       Select the model used for future turns.
-  /agents [filter]  List local Cursor SDK agents for this workspace.
-  /resume <id>      Resume an existing local agent conversation.
-  /runs [agent-id]  List runs for the current or selected agent.
-  /run <run-id>     Inspect one run without continuing it.
+  /agents [filter]  List numbered local Cursor SDK agents for this workspace.
+  /resume [target]  Resume by number from /agents or by agent id.
+  /runs [target]    List numbered runs for the current or selected agent.
+  /run <target>     Inspect a run by number from /runs or by run id.
   /debug [target]   Inspect the latest run, an agent's latest run, or a run id.
+  /history [target] Show recent stored messages for the current or selected agent.
   /note <path>      Set current note. Use /note none to clear.
   /vault <path>     Set vault root and refresh assistant context.
   /verbose on|off   Show or hide status/thinking/tool events.
